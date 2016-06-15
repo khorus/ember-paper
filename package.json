@@ -60,6 +60,9 @@
   "ember-addon": {
     "configPath": "tests/dummy/config",
     "demoURL": "https://miguelcobain.github.io/ember-paper",
-    "before": "ember-cli-sri"
+    "before": [
+      "ember-cli-sri",
+      "ember-cli-autoprefixer"
+    ]
   }
 }
