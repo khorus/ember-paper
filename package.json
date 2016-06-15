@@ -1,7 +1,7 @@
 {
   "name": "ember-paper",
   "description": "The Ember approach to Material Design.",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "directories": {
     "doc": "doc",
     "test": "tests"
@@ -59,6 +59,10 @@
   ],
   "ember-addon": {
     "configPath": "tests/dummy/config",
-    "demoURL": "https://miguelcobain.github.io/ember-paper"
+    "demoURL": "https://miguelcobain.github.io/ember-paper",
+    "before": [
+      "ember-cli-sri",
+      "ember-cli-autoprefixer"
+    ]
   }
 }
