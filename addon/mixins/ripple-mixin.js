@@ -1,287 +1,354 @@
-import Ember from 'ember';
-/* global Hammer */
-/* global propagating */
+/**
+ * @module ember-paper
+ */
+import { computed } from "@ember/object";
+import Mixin from "@ember/object/mixin";
+import { run } from "@ember/runloop";
+import { supportsPassiveEventListeners } from "ember-paper/utils/browser-features";
+import { nextTick } from "ember-css-transitions/mixins/transition-mixin";
 
-export default Ember.Mixin.create({
-  mousedown: true,
-  hover: true,
-  focus: true,
+/* global window */
+
+const DURATION = 400;
+
+/**
+ * @class RippleMixin
+ * @extends Ember.Mixin
+ */
+export default Mixin.create({
+  rippleContainerSelector: ".md-container",
+
   center: false,
-  mousedownPauseTime: 150,
   dimBackground: false,
-  outline: false,
-  fullRipple: true,
-  isMenuItem: false,
   fitRipple: false,
+  colorElement: false,
+  noink: false,
 
-  isActive: false,
-  isHeld: false,
-  counter: 0,
-
-  ripples: [],
-  rippleStates: [],
-
-  rippleContainerSelector: '',
+  rippleInk: computed("noink", "rippleInkColor", function() {
+    if (this.get("noink")) {
+      return false;
+    }
+    if (this.get("rippleInkColor")) {
+      return this.get("rippleInkColor");
+    }
+    return "";
+  }),
 
   didInsertElement() {
     this._super(...arguments);
-    if (!this.get('noink')) {
-      this.element = this.$();
-      this.colorElement = this.$();
-      this.node = this.element[0];
-      this.hammertime = propagating(new Hammer(this.node));
-      this.color = this.parseColor(this.element.attr('md-ink-ripple')) || this.parseColor(window.getComputedStyle(this.colorElement[0]).color || 'rgb(0, 0, 0)');
-      if (this.get('mousedown')) {
-        this.hammertime.on('hammer.input', Ember.run.bind(this, this.onInput));
-      }
-    }
-  },
 
-  willDestroyElement() {
-    this._super(...arguments);
-    if (this.rippleContainer) {
-      this.rippleContainer.remove();
-    }
-    if (this.hammertime) {
-      this.hammertime.destroy();
-    }
-  },
+    let rippleContainerSelector = this.get("rippleContainerSelector");
 
-  propagateRipple: false,
-  onInput(ev) {
-    var ripple, index;
-    if (ev.eventType === Hammer.INPUT_START && ev.isFirst && !this.get('disabled')) {
-      ripple = this.createRipple(ev.center.x, ev.center.y);
-      this.isHeld = true;
-    } else if (ev.eventType === Hammer.INPUT_END && ev.isFinal) {
-      this.isHeld = false;
-      index = this.ripples.length - 1;
-      ripple = this.ripples[index];
-      Ember.run.later(this,function(){
-        this.updateElement(ripple);
-      }, 0);
-    }
-    if (!this.get('propagateRipple')) {
-      ev.stopPropagation();
-    }
-  },
-  /**
-  * Gets the current ripple container
-  * If there is no ripple container, it creates one and returns it
-  *
-  * @returns {angular.element} ripple container element
-  */
-  getRippleContainer() {
-    if (this.rippleContainer){
-      return this.rippleContainer;
-    }
-    this.rippleContainer = Ember.$('<div class="md-ripple-container">');
-    this.$(this.get('rippleContainerSelector')).append(this.rippleContainer);
-    return this.rippleContainer;
-  },
-  /**
-  * Creates the ripple element with the provided css
-  *
-  * @param {object} css properties to be applied
-  *
-  * @returns {angular.element} the generated ripple element
-  */
-  getRippleElement(css) {
-    var elem = Ember.$('<div class="md-ripple" data-counter="' + this.counter++ + '">');
-    this.ripples.unshift(elem);
-    this.rippleStates.unshift({ animating: true });
-    this.rippleContainer.append(elem);
-    if(css){
-      elem.css(css);
-    }
-    return elem;
-  },
-  /**
-  * Calculate the ripple size
-  *
-  * @returns {number} calculated ripple diameter
-  */
-  getRippleSize(left, top) {
-    var width = this.rippleContainer.prop('offsetWidth'),
-        height = this.rippleContainer.prop('offsetHeight'),
-        multiplier, size, rect;
-    if (this.get('isMenuItem')) {
-      size = Math.sqrt(Math.pow(width, 2) + Math.pow(height, 2));
-    } else if (this.get('outline')) {
-      rect = this.node.getBoundingClientRect();
-      left -= rect.left;
-      top -= rect.top;
-      width = Math.max(left, width - left);
-      height = Math.max(top, height - top);
-      size = 2 * Math.sqrt(Math.pow(width, 2) + Math.pow(height, 2));
+    if (rippleContainerSelector) {
+      this.rippleElement = this.element.querySelector(rippleContainerSelector);
     } else {
-      multiplier = this.get('fullRipple') ? 1.1 : 0.8;
-      size = Math.sqrt(Math.pow(width, 2) + Math.pow(height, 2)) * multiplier;
-      if (this.get('fitRipple')) {
-        size = Math.min(height, width, size);
-      }
+      this.rippleElement = this.element;
     }
-    return size;
-  },
-  parseColor(color) {
-    if (!color) { return; }
-    if (color.indexOf('rgba') === 0) { return color.replace(/\d?\.?\d*\s*\)\s*$/, '0.1)'); }
-    if (color.indexOf('rgb')  === 0) { return rgbToRGBA(color); }
-    if (color.indexOf('#')    === 0) { return hexToRGBA(color); }
+    this.mousedown = false;
+    this.ripples = [];
+    this.timeout = null; // Stores a reference to the most-recent ripple timeout
+    this.lastRipple = null;
 
-    /**
-     * Converts a hex value to an rgba string
-     *
-     * @param {string} hex value (3 or 6 digits) to be converted
-     *
-     * @returns {string} rgba color with 0.1 alpha
+    this._container = this.createContainer();
+
+    this.rippleElement.classList.add("md-ink-ripple");
+    this.bindEvents();
+  },
+
+  autoCleanup(self, cleanupFn) {
+    if (self.mousedown || self.lastRipple) {
+      self.mousedown = false;
+      nextTick().then(() => {
+        cleanupFn.bind(self)();
+      });
+    }
+  },
+
+  color(value) {
+    let self = this;
+
+    // If assigning a color value, apply it to background and the ripple color
+    if (typeof value !== "undefined") {
+      self._color = self._parseColor(value);
+    }
+
+    // If color lookup, use assigned, defined, or inherited
+    return (
+      self._color ||
+      self._parseColor(self.get("rippleInk")) ||
+      self._parseColor(getElementColor())
+    );
+
+    /*
+     * Finds the color element and returns its text color for use as default ripple color
+     * @returns {string}
+     */
+    function getElementColor() {
+      let items = self.get("colorElement") ? self.get("colorElement") : [];
+      let elem = items.length ? items[0] : self.rippleElement;
+
+      return elem ? window.getComputedStyle(elem).color : "rgb(0,0,0)";
+    }
+  },
+
+  calculateColor() {
+    return this.color();
+  },
+
+  _parseColor(color, multiplier) {
+    multiplier = multiplier || 1;
+
+    if (!color) {
+      return;
+    }
+    if (color.indexOf("rgba") === 0) {
+      return color.replace(
+        /\d?\.?\d*\s*\)\s*$/,
+        `${(0.1 * multiplier).toString()})`
+      );
+    }
+    if (color.indexOf("rgb") === 0) {
+      return rgbToRGBA(color);
+    }
+    if (color.indexOf("#") === 0) {
+      return hexToRGBA(color);
+    }
+
+    /*
+     * Converts hex value to RGBA string
+     * @param color {string}
+     * @returns {string}
      */
     function hexToRGBA(color) {
-      var hex = color.charAt(0) === '#' ? color.substr(1) : color,
-        dig = hex.length / 3,
-        red = hex.substr(0, dig),
-        grn = hex.substr(dig, dig),
-        blu = hex.substr(dig * 2);
+      let hex = color[0] === "#" ? color.substr(1) : color;
+      let dig = hex.length / 3;
+      let red = hex.substr(0, dig);
+      let green = hex.substr(dig, dig);
+      let blue = hex.substr(dig * 2);
       if (dig === 1) {
         red += red;
-        grn += grn;
-        blu += blu;
+        green += green;
+        blue += blue;
       }
-      return 'rgba(' + parseInt(red, 16) + ',' + parseInt(grn, 16) + ',' + parseInt(blu, 16) + ',0.1)';
+      return `rgba(${parseInt(red, 16)}, ${parseInt(green, 16)}, ${parseInt(
+        blue,
+        16
+      )}, 0.1)`;
     }
 
-    /**
-     * Converts rgb value to rgba string
-     *
-     * @param {string} rgb color string
-     *
-     * @returns {string} rgba color with 0.1 alpha
+    /*
+     * Converts an RGB color to RGBA
+     * @param color {string}
+     * @returns {string}
      */
     function rgbToRGBA(color) {
-      return color.replace(')', ', 0.1)').replace('(', 'a(');
+      return color.replace(")", ", 0.1)").replace("(", "a(");
+    }
+  },
+  bindEvents() {
+    let re = this.rippleElement;
+    re.addEventListener("mousedown", run.bind(this, this.handleMousedown));
+    re.addEventListener("mouseup", run.bind(this, this.handleMouseup));
+    re.addEventListener("mouseleave", run.bind(this, this.handleMouseup));
+
+    let options = supportsPassiveEventListeners ? { passive: true } : false;
+    re.addEventListener(
+      "touchend",
+      run.bind(this, this.handleMouseup),
+      options
+    );
+    re.addEventListener(
+      "touchmove",
+      run.bind(this, this.handleTouchmove),
+      options
+    );
+  },
+
+  handleMousedown(event) {
+    if (this.mousedown) {
+      return;
     }
 
-  },
-  /**
-  * Creates a ripple at the provided coordinates
-  *
-  * @param {number} left cursor position
-  * @param {number} top cursor position
-  *
-  * @returns {angular.element} the generated ripple element
-  */
-  createRipple(left, top) {
-    var color = this.color = this.parseColor(this.element.attr('md-ink-ripple')) || this.parseColor(window.getComputedStyle(this.colorElement[0]).color || 'rgb(0, 0, 0)');
+    // When jQuery is loaded, we have to get the original event
+    if (event.hasOwnProperty("originalEvent")) {
+      event = event.originalEvent;
+    }
+    this.mousedown = true;
+    if (this.get("center")) {
+      this.createRipple(
+        this._container.clientWidth / 2,
+        this._container.clientWidth / 2
+      );
+    } else {
+      // We need to calculate the relative coordinates if the target is a sublayer of the ripple element
+      if (event.srcElement !== this.rippleElement) {
+        let layerRect = this.rippleElement.getBoundingClientRect();
+        let layerX = event.clientX - layerRect.left;
+        let layerY = event.clientY - layerRect.top;
 
-    var container = this.getRippleContainer(),
-      size = this.getRippleSize(left, top),
-      css = this.getRippleCss(size, left, top),
-      elem = this.getRippleElement(css),
-      index = this.ripples.indexOf(elem),
-      state = this.rippleStates[index] || {};
-
-    this.rippleSize = size;
-
-    state.animating = true;
-
-    Ember.run.later(this, function() {
-      if (this.get('dimBackground')) {
-        container.css({ backgroundColor: color });
-      }
-      elem.addClass('md-ripple-placed md-ripple-scaled');
-      if (this.get('outline')) {
-        elem.css({
-          borderWidth: (size * 0.5) + 'px',
-          marginLeft: (size * -0.5) + 'px',
-          marginTop: (size * -0.5) + 'px'
-        });
+        this.createRipple(layerX, layerY);
       } else {
-        elem.css({ left: '50%', top: '50%' });
+        this.createRipple(event.offsetX, event.offsetY);
       }
-      this.updateElement(elem);
-      Ember.run.later(this,function () {
-        state.animating = false;
-        this.updateElement(elem);
-      }, (this.get('outline') ? 450 : 225));
-    }, 0);
-
-    return elem;
-  },
-  removeElement(elem, wait) {
-    var ripples = this.ripples;
-    ripples.splice(ripples.indexOf(elem), 1);
-    if (ripples.length === 0 && this.rippleContainer) {
-      this.rippleContainer.css({ backgroundColor: '' });
     }
-    Ember.run.later(this,function(){
-      elem.remove();
-    }, wait);
   },
-  updateElement(elem) {
-    var index = this.ripples.indexOf(elem),
-    state = this.rippleStates[index] || {},
-    elemIsActive = this.ripples.length > 1 ? false : this.isActive,
-    elemIsHeld   = this.ripples.length > 1 ? false : this.isHeld;
-    if (elemIsActive || state.animating || elemIsHeld) {
-      elem.addClass('md-ripple-visible');
-    } else if (elem) {
-      elem.removeClass('md-ripple-visible');
-      if (this.get('outline')) {
-        elem.css({
-          width: this.rippleSize + 'px',
-          height: this.rippleSize + 'px',
-          marginLeft: (this.rippleSize * -1) + 'px',
-          marginTop: (this.rippleSize * -1) + 'px'
-        });
+  handleMouseup() {
+    this.autoCleanup(this, this.clearRipples);
+  },
+  handleTouchmove() {
+    this.autoCleanup(this, this.deleteRipples);
+  },
+  deleteRipples() {
+    for (let i = 0; i < this.ripples.length; i++) {
+      this.ripples[i].remove();
+    }
+  },
+  clearRipples() {
+    for (let i = 0; i < this.ripples.length; i++) {
+      this.fadeInComplete(this.ripples[i]);
+    }
+  },
+  createContainer() {
+    let container = document.createElement("div");
+    container.classList.add("md-ripple-container");
+    this.rippleElement.appendChild(container);
+    return container;
+  },
+  clearTimeout() {
+    if (this.timeout) {
+      run.cancel(this.timeout);
+      this.timeout = null;
+    }
+  },
+  isRippleAllowed() {
+    let element = this.rippleElement;
+
+    do {
+      if (!element.tagName || element.tagName === "BODY") {
+        break;
       }
-      this.removeElement(elem, this.get('outline') ? 450 : 650);
-    }
+
+      if (element && typeof element.hasAttribute === "function") {
+        if (element.hasAttribute("disabled")) {
+          return false;
+        }
+        if (this.get("rippleInk") === false) {
+          return false;
+        }
+      }
+      element = element.parentNode;
+    } while (element);
+
+    return true;
   },
-  /**
-  * Generates the ripple css
-  *
-  * @param {number} the diameter of the ripple
-  * @param {number} the left cursor offset
-  * @param {number} the top cursor offset
-  *
-  * @returns {{backgroundColor: *, width: string, height: string, marginLeft: string, marginTop: string}}
-  */
-  getRippleCss(size, left, top) {
-    var rect,
-    css = {
-      backgroundColor: rgbaToRGB(this.color),
-      borderColor: rgbaToRGB(this.color),
-      width: size + 'px',
-      height: size + 'px'
-    };
-
-    if (this.get('outline')) {
-      css.width = 0;
-      css.height = 0;
-    } else {
-      css.marginLeft = css.marginTop = (size * -0.5) + 'px';
+  createRipple(left, top) {
+    if (!this.isRippleAllowed()) {
+      return;
     }
 
-    if (this.get('center')) {
-      css.left = css.top = '50%';
-    } else {
-      rect = this.node.getBoundingClientRect();
-      css.left = Math.round((left - rect.left) / this.rippleContainer.prop('offsetWidth') * 100) + '%';
-      css.top = Math.round((top - rect.top) / this.rippleContainer.prop('offsetHeight') * 100) + '%';
+    let ctrl = this;
+    let ripple = document.createElement("div");
+    ripple.classList.add("md-ripple");
+
+    let width = this.rippleElement.clientWidth;
+    let height = this.rippleElement.clientHeight;
+    let x = Math.max(Math.abs(width - left), left) * 2;
+    let y = Math.max(Math.abs(height - top), top) * 2;
+    let size = getSize(this.get("fitRipple"), x, y);
+    let color = this.calculateColor();
+
+    let rippleCss = `
+      left: ${left}px;
+      top: ${top}px;
+      background: 'black';
+      width: ${size}px;
+      height: ${size}px;
+      background-color: ${rgbaToRGB(color)};
+      border-color: ${rgbaToRGB(color)}
+    `;
+
+    ripple.style.cssText = rippleCss;
+
+    this.lastRipple = ripple;
+
+    // we only want one timeout to be running at a time
+    this.clearTimeout();
+    this.timeout = run.later(
+      this,
+      function() {
+        ctrl.clearTimeout();
+        if (!ctrl.mousedown) {
+          ctrl.fadeInComplete(ripple);
+        }
+      },
+      {},
+      DURATION * 0.35
+    );
+
+    if (this.get("dimBackground")) {
+      this._container.style.cssText = `background-color: ${color}`;
     }
+    this._container.appendChild(ripple);
+    this.ripples.push(ripple);
+    ripple.classList.add("md-ripple-placed");
 
-    return css;
+    nextTick().then(() => {
+      ripple.classList.add("md-ripple-scaled", "md-ripple-active");
+      run.later(
+        this,
+        function() {
+          ctrl.clearRipples();
+        },
+        {},
+        DURATION
+      );
+    });
 
-    /**
-    * Converts rgba string to rgb, removing the alpha value
-    *
-    * @param {string} rgba color
-    *
-    * @returns {string} rgb color
-    */
     function rgbaToRGB(color) {
-      return color.replace('rgba', 'rgb').replace(/,[^\)\,]+\)/, ')');
+      return color
+        ? color.replace("rgba", "rgb").replace(/,[^),]+\)/, ")")
+        : "rgb(0,0,0)";
     }
-  }
 
+    function getSize(fit, x, y) {
+      return fit ? Math.max(x, y) : Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+    }
+  },
+  fadeInComplete(ripple) {
+    if (this.lastRipple === ripple) {
+      if (!this.timeout && !this.mousedown) {
+        this.removeRipple(ripple);
+      }
+    } else {
+      this.removeRipple(ripple);
+    }
+  },
+  removeRipple(ripple) {
+    let ctrl = this;
+    let index = this.ripples.indexOf(ripple);
+
+    if (index < 0) {
+      return;
+    }
+    this.ripples.splice(this.ripples.indexOf(ripple), 1);
+    ripple.classList.remove("md-ripple-active");
+    ripple.classList.add("md-ripple-remove");
+    if (this.ripples.length === 0) {
+      this._container.style.cssText = `backgroundColor: ''`;
+    }
+    // use a 2-second timeout in order to allow for the animation to finish
+    // we don't actually care how long the animation takes
+    run.later(
+      this,
+      function() {
+        ctrl.fadeOutComplete(ripple);
+      },
+      {},
+      DURATION
+    );
+  },
+  fadeOutComplete(ripple) {
+    ripple.parentNode.removeChild(ripple);
+    this.lastRipple = null;
+  }
 });
