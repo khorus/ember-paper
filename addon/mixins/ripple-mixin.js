@@ -1,11 +1,11 @@
 /**
  * @module ember-paper
  */
-import { computed } from "@ember/object";
-import Mixin from "@ember/object/mixin";
-import { run } from "@ember/runloop";
+import Ember from "ember";
 import { supportsPassiveEventListeners } from "ember-paper/utils/browser-features";
 import { nextTick } from "ember-css-transitions/mixins/transition-mixin";
+
+const { computed, Mixin, run } = Ember;
 
 /* global window */
 
